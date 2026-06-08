@@ -39,6 +39,18 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="canceller_name" label="撤销人" width="100">
+          <template #default="{ row }">
+            <span v-if="row.canceller_name">{{ row.canceller_name }}</span>
+            <span v-else style="color: #909399;">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="cancelled_at" label="撤销时间" width="160">
+          <template #default="{ row }">
+            <span v-if="row.cancelled_at">{{ row.cancelled_at }}</span>
+            <span v-else style="color: #909399;">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="creator_name" label="创建人" width="100" />
         <el-table-column prop="created_at" label="创建时间" width="160" />
         <el-table-column label="操作" width="200" fixed="right">

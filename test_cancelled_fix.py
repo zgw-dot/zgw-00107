@@ -76,6 +76,11 @@ def test_cancelled_stock_take_visible_to_duty():
         assert cancelled_st['cancelled_at'] != '', '应有撤销时间'
         print(f'  ✅ 撤销盘点单成功: 状态={cancelled_st["status_text"]}, 撤销人={cancelled_st["canceller_name"]}, 撤销时间={cancelled_st["cancelled_at"]}')
         
+        # ========== 管理员查询列表（用于对比验证） ==========
+        response = requests.get(f'{BASE_URL}/stock-takes', headers=get_headers(admin_token))
+        assert response.status_code == 200, f'管理员查询列表失败: {response.text}'
+        admin_stock_takes = response.json()
+        
         # ========== 值班员查询列表 ==========
         print('\n--- 步骤4: 值班员查询盘点单列表 ---')
         response = requests.get(f'{BASE_URL}/stock-takes', headers=get_headers(duty_token))
@@ -100,6 +105,22 @@ def test_cancelled_stock_take_visible_to_duty():
         assert our_cancelled[0]['canceller_name'] == 'admin', '应显示撤销人'
         assert our_cancelled[0]['cancelled_at'] != '', '应显示撤销时间'
         print(f'  ✅ 值班员列表中能看到已撤销盘点单: {our_cancelled[0]["stock_take_no"]}, 状态={our_cancelled[0]["status_text"]}')
+        print(f'    列表行直接显示: 撤销人={our_cancelled[0]["canceller_name"]}, 撤销时间={our_cancelled[0]["cancelled_at"]}')
+        
+        # 验证非已撤销记录的撤销字段为空
+        confirmed_in_list = [st for st in duty_list if st['status'] == 'confirmed']
+        if len(confirmed_in_list) > 0:
+            conf = confirmed_in_list[0]
+            assert conf['canceller_name'] == '', '已确认记录的撤销人应为空'
+            assert conf['cancelled_at'] == '', '已确认记录的撤销时间应为空'
+            print(f'  ✅ 已确认记录的撤销字段正确为空: {conf["stock_take_no"]}')
+        
+        pending_in_admin_list = [st for st in admin_stock_takes if st['status'] == 'pending_confirm']
+        if len(pending_in_admin_list) > 0:
+            pend = pending_in_admin_list[0]
+            assert pend['canceller_name'] == '', '待确认记录的撤销人应为空'
+            assert pend['cancelled_at'] == '', '待确认记录的撤销时间应为空'
+            print(f'  ✅ 待确认记录的撤销字段正确为空: {pend["stock_take_no"]}')
         
         # ========== 值班员查看已撤销盘点单详情 ==========
         print('\n--- 步骤5: 值班员查看已撤销盘点单详情 ---')
