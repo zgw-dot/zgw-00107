@@ -44,6 +44,10 @@
             <el-icon><Document /></el-icon>
             <span>借用单据管理</span>
           </el-menu-item>
+          <el-menu-item index="/stock-takes">
+            <el-icon><Histogram /></el-icon>
+            <span>库存盘点管理</span>
+          </el-menu-item>
           <el-menu-item index="/audit">
             <el-icon><Notebook /></el-icon>
             <span>操作审计日志</span>

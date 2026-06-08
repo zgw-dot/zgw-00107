@@ -44,9 +44,40 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="待确认盘点" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.pending_stock_take_count > 0" type="warning" size="small">
+              {{ row.pending_stock_take_count }}
+            </el-tag>
+            <span v-else style="color: #909399;">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="已确认盘点" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.confirmed_stock_take_count > 0" type="success" size="small">
+              {{ row.confirmed_stock_take_count }}
+            </el-tag>
+            <span v-else style="color: #909399;">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="累计差异" width="110" align="center">
+          <template #default="{ row }">
+            <span v-if="row.total_difference_quantity !== 0" :style="{ color: '#f56c6c', fontWeight: 600 }">
+              {{ row.total_difference_quantity > 0 ? '+' : '' }}{{ row.total_difference_quantity }}
+            </span>
+            <span v-else style="color: #909399;">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="viewDetail(row)">详情</el-button>
+            <el-button 
+              v-if="isKeeper"
+              link 
+              type="success" 
+              @click="handleQuickStockTake(row)"
+              :disabled="row.status !== 'normal' || row.is_expired || row.pending_stock_take_count > 0"
+            >盘点</el-button>
             <el-button 
               v-if="isKeeper"
               link 
@@ -155,6 +186,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Upload, Download } from '@element-plus/icons-vue'
 import { getBatches, createBatch, rotateBatch, exportBatches, importBatches } from '../api/batch'
+import { createStockTake } from '../api/stockTake'
 import { useUserStore } from '../store/user'
 
 const router = useRouter()
@@ -281,6 +313,38 @@ async function handleRotate() {
 
 function viewDetail(row) {
   router.push(`/batches/${row.id}`)
+}
+
+async function handleQuickStockTake(row) {
+  try {
+    const { value: reason } = await ElMessageBox.prompt(
+      `确定要对批次 ${row.batch_no} (${row.material_name}) 发起盘点吗？`,
+      '发起盘点',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputPlaceholder: '请填写盘点原因（必填）',
+        inputValidator: (value) => {
+          if (!value?.trim()) return '请填写盘点原因'
+          return true
+        }
+      }
+    )
+    const res = await createStockTake({
+      material_batch_id: row.id,
+      reason: reason.trim()
+    })
+    ElMessage.success('盘点单创建成功，请录入实盘数量')
+    router.push(`/stock-takes/${res.id}`)
+  } catch (e) {
+    if (e !== 'cancel' && e.response?.data?.conflicts) {
+      ElMessageBox.alert(
+        `<div style="color: #f56c6c;">${e.response.data.message}<br/><br/>${e.response.data.conflicts.join('<br/>')}</div>`,
+        '存在冲突',
+        { dangerouslyUseHTMLString: true }
+      )
+    }
+  }
 }
 
 function beforeImport(file) {

@@ -3,7 +3,7 @@ from datetime import datetime, date
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from models import db, User, MaterialBatch, BorrowOrder, BorrowItem, AuditLog
+from models import db, User, MaterialBatch, BorrowOrder, BorrowItem, AuditLog, StockTake
 import pandas as pd
 from io import BytesIO, StringIO
 
@@ -26,20 +26,62 @@ def generate_order_no():
     return f'BY{today}{count + 1:04d}'
 
 
-def add_audit_log(order_id=None, batch_id=None, action='', action_text='', operator_id=None, reason='', old_status=None, new_status=None, detail=''):
+def add_audit_log(order_id=None, batch_id=None, stock_take_id=None, action='', action_text='', operator_id=None, reason='', old_status=None, new_status=None, old_quantity=None, new_quantity=None, detail=''):
     log = AuditLog(
         borrow_order_id=order_id,
         material_batch_id=batch_id,
+        stock_take_id=stock_take_id,
         action=action,
         action_text=action_text,
         operator_id=operator_id,
         reason=reason,
         old_status=old_status,
         new_status=new_status,
+        old_quantity=old_quantity,
+        new_quantity=new_quantity,
         detail=detail
     )
     db.session.add(log)
     db.session.flush()
+
+
+def generate_stock_take_no():
+    today = datetime.now().strftime('%Y%m%d')
+    count = StockTake.query.filter(StockTake.stock_take_no.like(f'PD{today}%')).count()
+    return f'PD{today}{count + 1:04d}'
+
+
+def check_batch_conflicts(batch_id, exclude_stock_take_id=None):
+    conflicts = []
+    
+    pending_stock_take_query = StockTake.query.filter_by(
+        material_batch_id=batch_id,
+        status='pending_confirm'
+    )
+    if exclude_stock_take_id:
+        pending_stock_take_query = pending_stock_take_query.filter(StockTake.id != exclude_stock_take_id)
+    
+    pending_stock_take = pending_stock_take_query.first()
+    if pending_stock_take:
+        conflicts.append(f'该批次存在未完成的盘点单：{pending_stock_take.stock_take_no}，请先处理后再发起新盘点')
+    
+    pending_orders = BorrowOrder.query.join(BorrowItem).filter(
+        BorrowItem.material_batch_id == batch_id,
+        BorrowOrder.status.in_(['pending_approval', 'approved', 'received'])
+    ).all()
+    
+    for order in pending_orders:
+        if order.status == 'pending_approval':
+            conflicts.append(f'该批次存在待审批借用单：{order.order_no}')
+        elif order.status == 'approved':
+            conflicts.append(f'该批次存在待领用借用单：{order.order_no}')
+        elif order.status == 'received':
+            for item in order.items:
+                if item.material_batch_id == batch_id and (item.quantity - item.returned_quantity - item.damaged_quantity) > 0:
+                    conflicts.append(f'该批次存在未完成借用：借用单 {order.order_no}，未归还数量 {item.quantity - item.returned_quantity - item.damaged_quantity}')
+                    break
+    
+    return conflicts
 
 
 def require_warehouse_keeper():
@@ -105,7 +147,31 @@ def get_users():
 @jwt_required()
 def get_batches():
     batches = MaterialBatch.query.order_by(MaterialBatch.created_at.desc()).all()
-    return jsonify([b.to_dict() for b in batches])
+    result = []
+    for b in batches:
+        batch_dict = b.to_dict()
+        pending_count = StockTake.query.filter_by(
+            material_batch_id=b.id,
+            status='pending_confirm'
+        ).count()
+        confirmed_count = StockTake.query.filter_by(
+            material_batch_id=b.id,
+            status='confirmed'
+        ).count()
+        cancelled_count = StockTake.query.filter_by(
+            material_batch_id=b.id,
+            status='cancelled'
+        ).count()
+        diff_count = db.session.query(db.func.sum(StockTake.difference_quantity)).filter_by(
+            material_batch_id=b.id,
+            status='confirmed'
+        ).scalar() or 0
+        batch_dict['pending_stock_take_count'] = pending_count
+        batch_dict['confirmed_stock_take_count'] = confirmed_count
+        batch_dict['cancelled_stock_take_count'] = cancelled_count
+        batch_dict['total_difference_quantity'] = diff_count
+        result.append(batch_dict)
+    return jsonify(result)
 
 
 @app.route('/api/batches/available', methods=['GET'])
@@ -182,10 +248,12 @@ def get_batch_detail(batch_id):
         return jsonify({'message': '批次不存在'}), 404
 
     logs = AuditLog.query.filter_by(material_batch_id=batch_id).order_by(AuditLog.created_at.desc()).all()
+    stock_takes = StockTake.query.filter_by(material_batch_id=batch_id).order_by(StockTake.created_at.desc()).all()
 
     return jsonify({
         'batch': batch.to_dict(),
-        'audit_logs': [l.to_dict() for l in logs]
+        'audit_logs': [l.to_dict() for l in logs],
+        'stock_takes': [st.to_dict() for st in stock_takes]
     })
 
 
@@ -759,6 +827,249 @@ def import_batches():
 def get_audit_logs():
     logs = AuditLog.query.order_by(AuditLog.created_at.desc()).limit(200).all()
     return jsonify([l.to_dict() for l in logs])
+
+
+@app.route('/api/stock-takes', methods=['GET'])
+@jwt_required()
+def get_stock_takes():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    stock_takes = StockTake.query.order_by(StockTake.created_at.desc()).all()
+    
+    if user.role == 'duty_officer':
+        stock_takes = [st for st in stock_takes if st.status == 'confirmed']
+    
+    return jsonify([st.to_dict() for st in stock_takes])
+
+
+@app.route('/api/stock-takes/<int:stock_take_id>', methods=['GET'])
+@jwt_required()
+def get_stock_take_detail(stock_take_id):
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    
+    stock_take = StockTake.query.get(stock_take_id)
+    if not stock_take:
+        return jsonify({'message': '盘点单不存在'}), 404
+    
+    if user.role == 'duty_officer' and stock_take.status != 'confirmed':
+        return jsonify({'message': '值班员只能查看已确认的盘点记录'}), 403
+    
+    logs = AuditLog.query.filter_by(stock_take_id=stock_take_id).order_by(AuditLog.created_at.desc()).all()
+    
+    return jsonify({
+        'stock_take': stock_take.to_dict(),
+        'audit_logs': [l.to_dict() for l in logs]
+    })
+
+
+@app.route('/api/stock-takes', methods=['POST'])
+@jwt_required()
+def create_stock_take():
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+    
+    batch_id = data.get('material_batch_id')
+    if not batch_id:
+        return jsonify({'message': '请选择盘点批次'}), 400
+    
+    batch = MaterialBatch.query.get(batch_id)
+    if not batch:
+        return jsonify({'message': '批次不存在'}), 404
+    
+    if batch.status != 'normal':
+        return jsonify({'message': f'批次状态为{batch.status}，无法盘点'}), 400
+    
+    conflicts = check_batch_conflicts(batch_id)
+    if conflicts:
+        return jsonify({
+            'message': '发起盘点失败，存在以下冲突：',
+            'conflicts': conflicts
+        }), 400
+    
+    stock_take = StockTake(
+        stock_take_no=generate_stock_take_no(),
+        material_batch_id=batch_id,
+        expected_quantity=batch.available_quantity,
+        created_by=user_id,
+        status='pending_confirm'
+    )
+    db.session.add(stock_take)
+    db.session.flush()
+    
+    add_audit_log(
+        stock_take_id=stock_take.id,
+        batch_id=batch_id,
+        action='create_stock_take',
+        action_text='创建盘点单',
+        operator_id=user_id,
+        reason=data.get('reason', '发起库存盘点'),
+        new_status='pending_confirm',
+        detail=f'创建盘点单 {stock_take.stock_take_no}，批次 {batch.batch_no}，账面数量 {batch.available_quantity}{batch.unit}'
+    )
+    
+    db.session.commit()
+    return jsonify(stock_take.to_dict())
+
+
+@app.route('/api/stock-takes/<int:stock_take_id>/update', methods=['POST'])
+@jwt_required()
+def update_stock_take(stock_take_id):
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+    
+    stock_take = StockTake.query.get(stock_take_id)
+    if not stock_take:
+        return jsonify({'message': '盘点单不存在'}), 404
+    
+    if stock_take.status != 'pending_confirm':
+        return jsonify({'message': f'盘点单状态为{stock_take.get_status_text()}，无法修改'}), 400
+    
+    actual_quantity = data.get('actual_quantity')
+    if actual_quantity is None:
+        return jsonify({'message': '请输入实盘数量'}), 400
+    
+    actual_quantity = int(actual_quantity)
+    if actual_quantity < 0:
+        return jsonify({'message': '实盘数量不能为负数'}), 400
+    
+    stock_take.actual_quantity = actual_quantity
+    stock_take.difference_quantity = actual_quantity - stock_take.expected_quantity
+    stock_take.difference_reason = data.get('difference_reason', '')
+    stock_take.handling_opinion = data.get('handling_opinion', '')
+    
+    db.session.commit()
+    return jsonify(stock_take.to_dict())
+
+
+@app.route('/api/stock-takes/<int:stock_take_id>/confirm', methods=['POST'])
+@jwt_required()
+def confirm_stock_take(stock_take_id):
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+    
+    stock_take = StockTake.query.get(stock_take_id)
+    if not stock_take:
+        return jsonify({'message': '盘点单不存在'}), 404
+    
+    if stock_take.status != 'pending_confirm':
+        return jsonify({'message': f'盘点单状态为{stock_take.get_status_text()}，无法确认'}), 400
+    
+    if stock_take.actual_quantity is None:
+        return jsonify({'message': '请先录入实盘数量'}), 400
+    
+    difference_reason = data.get('difference_reason', stock_take.difference_reason or '').strip()
+    handling_opinion = data.get('handling_opinion', stock_take.handling_opinion or '').strip()
+    
+    if stock_take.difference_quantity != 0 and not difference_reason:
+        return jsonify({'message': '存在差异时必须填写差异原因'}), 400
+    
+    conflicts = check_batch_conflicts(stock_take.material_batch_id, exclude_stock_take_id=stock_take_id)
+    if conflicts:
+        return jsonify({
+            'message': '确认盘点失败，存在以下冲突，请先处理：',
+            'conflicts': conflicts
+        }), 400
+    
+    batch = MaterialBatch.query.get(stock_take.material_batch_id)
+    if not batch:
+        db.session.rollback()
+        return jsonify({'message': '关联批次不存在'}), 400
+    
+    old_available = batch.available_quantity
+    old_total = batch.total_quantity
+    diff = stock_take.difference_quantity
+    
+    if batch.available_quantity != stock_take.expected_quantity:
+        return jsonify({
+            'message': f'账面数量已变化，当前可用数量为 {batch.available_quantity}{batch.unit}，请重新发起盘点'
+        }), 400
+    
+    batch.available_quantity = stock_take.actual_quantity
+    batch.total_quantity = batch.total_quantity + diff
+    
+    stock_take.difference_reason = difference_reason
+    stock_take.handling_opinion = handling_opinion
+    stock_take.status = 'confirmed'
+    stock_take.confirmed_by = user_id
+    stock_take.confirmed_at = datetime.now()
+    
+    add_audit_log(
+        stock_take_id=stock_take.id,
+        batch_id=batch.id,
+        action='confirm_stock_take',
+        action_text='确认盘点',
+        operator_id=user_id,
+        reason=handling_opinion if handling_opinion else difference_reason,
+        old_status='pending_confirm',
+        new_status='confirmed',
+        old_quantity=old_available,
+        new_quantity=stock_take.actual_quantity,
+        detail=f'盘点单 {stock_take.stock_take_no} 确认，批次 {batch.batch_no}，账面 {old_available}{batch.unit}，实盘 {stock_take.actual_quantity}{batch.unit}，差异 {diff:+d}{batch.unit}'
+    )
+    
+    add_audit_log(
+        batch_id=batch.id,
+        action='stock_adjust',
+        action_text='库存调整',
+        operator_id=user_id,
+        reason=f'盘点调整：{difference_reason}',
+        old_quantity=old_available,
+        new_quantity=stock_take.actual_quantity,
+        detail=f'批次 {batch.batch_no} 库存调整，可用数量 {old_available}{batch.unit} → {stock_take.actual_quantity}{batch.unit}，总数量 {old_total}{batch.unit} → {batch.total_quantity}{batch.unit}，盘点单 {stock_take.stock_take_no}'
+    )
+    
+    db.session.commit()
+    return jsonify(stock_take.to_dict())
+
+
+@app.route('/api/stock-takes/<int:stock_take_id>/cancel', methods=['POST'])
+@jwt_required()
+def cancel_stock_take(stock_take_id):
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+    
+    reason = data.get('reason', '').strip()
+    if not reason:
+        return jsonify({'message': '撤销原因不能为空'}), 400
+    
+    stock_take = StockTake.query.get(stock_take_id)
+    if not stock_take:
+        return jsonify({'message': '盘点单不存在'}), 404
+    
+    if stock_take.status != 'pending_confirm':
+        return jsonify({'message': f'盘点单状态为{stock_take.get_status_text()}，无法撤销'}), 400
+    
+    stock_take.status = 'cancelled'
+    stock_take.cancelled_by = user_id
+    stock_take.cancelled_at = datetime.now()
+    
+    add_audit_log(
+        stock_take_id=stock_take.id,
+        batch_id=stock_take.material_batch_id,
+        action='cancel_stock_take',
+        action_text='撤销盘点',
+        operator_id=user_id,
+        reason=reason,
+        old_status='pending_confirm',
+        new_status='cancelled',
+        detail=f'盘点单 {stock_take.stock_take_no} 撤销，原因：{reason}'
+    )
+    
+    db.session.commit()
+    return jsonify(stock_take.to_dict())
 
 
 if __name__ == '__main__':

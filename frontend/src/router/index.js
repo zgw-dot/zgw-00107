@@ -46,6 +46,16 @@ const routes = [
         path: 'audit',
         name: 'Audit',
         component: () => import('../views/AuditLog.vue')
+      },
+      {
+        path: 'stock-takes',
+        name: 'StockTakes',
+        component: () => import('../views/StockTakeList.vue')
+      },
+      {
+        path: 'stock-takes/:id',
+        name: 'StockTakeDetail',
+        component: () => import('../views/StockTakeDetail.vue')
       }
     ]
   }

@@ -160,17 +160,82 @@ class BorrowItem(db.Model):
         }
 
 
+class StockTake(db.Model):
+    __tablename__ = 'stock_takes'
+    id = db.Column(db.Integer, primary_key=True)
+    stock_take_no = db.Column(db.String(50), unique=True, nullable=False)
+    material_batch_id = db.Column(db.Integer, db.ForeignKey('material_batches.id'), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='pending_confirm')
+    expected_quantity = db.Column(db.Integer, nullable=False)
+    actual_quantity = db.Column(db.Integer)
+    difference_quantity = db.Column(db.Integer, default=0)
+    difference_reason = db.Column(db.Text)
+    handling_opinion = db.Column(db.Text)
+    created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    confirmed_by = db.Column(db.Integer, db.ForeignKey('users.id'))
+    confirmed_at = db.Column(db.DateTime)
+    cancelled_by = db.Column(db.Integer, db.ForeignKey('users.id'))
+    cancelled_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.now)
+    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
+
+    batch = db.relationship('MaterialBatch', foreign_keys=[material_batch_id])
+    creator = db.relationship('User', foreign_keys=[created_by])
+    confirmer = db.relationship('User', foreign_keys=[confirmed_by])
+    canceller = db.relationship('User', foreign_keys=[cancelled_by])
+    audit_logs = db.relationship('AuditLog', backref='stock_take', cascade='all, delete-orphan')
+
+    def get_status_text(self):
+        status_map = {
+            'pending_confirm': '待确认',
+            'confirmed': '已确认',
+            'cancelled': '已撤销'
+        }
+        return status_map.get(self.status, self.status)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'stock_take_no': self.stock_take_no,
+            'material_batch_id': self.material_batch_id,
+            'batch_no': self.batch.batch_no if self.batch else '',
+            'material_name': self.batch.material_name if self.batch else '',
+            'specification': self.batch.specification if self.batch else '',
+            'unit': self.batch.unit if self.batch else '',
+            'status': self.status,
+            'status_text': self.get_status_text(),
+            'expected_quantity': self.expected_quantity,
+            'actual_quantity': self.actual_quantity,
+            'difference_quantity': self.difference_quantity,
+            'difference_reason': self.difference_reason,
+            'handling_opinion': self.handling_opinion,
+            'created_by': self.created_by,
+            'creator_name': self.creator.username if self.creator else '',
+            'confirmed_by': self.confirmed_by,
+            'confirmer_name': self.confirmer.username if self.confirmer else '',
+            'confirmed_at': self.confirmed_at.strftime('%Y-%m-%d %H:%M:%S') if self.confirmed_at else '',
+            'cancelled_by': self.cancelled_by,
+            'canceller_name': self.canceller.username if self.canceller else '',
+            'cancelled_at': self.cancelled_at.strftime('%Y-%m-%d %H:%M:%S') if self.cancelled_at else '',
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'updated_at': self.updated_at.strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+
 class AuditLog(db.Model):
     __tablename__ = 'audit_logs'
     id = db.Column(db.Integer, primary_key=True)
     borrow_order_id = db.Column(db.Integer, db.ForeignKey('borrow_orders.id'))
     material_batch_id = db.Column(db.Integer, db.ForeignKey('material_batches.id'))
+    stock_take_id = db.Column(db.Integer, db.ForeignKey('stock_takes.id'))
     action = db.Column(db.String(50), nullable=False)
     action_text = db.Column(db.String(100), nullable=False)
     operator_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     reason = db.Column(db.Text, nullable=False)
     old_status = db.Column(db.String(50))
     new_status = db.Column(db.String(50))
+    old_quantity = db.Column(db.Integer)
+    new_quantity = db.Column(db.Integer)
     detail = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.now)
 
@@ -181,6 +246,7 @@ class AuditLog(db.Model):
             'id': self.id,
             'borrow_order_id': self.borrow_order_id,
             'material_batch_id': self.material_batch_id,
+            'stock_take_id': self.stock_take_id,
             'action': self.action,
             'action_text': self.action_text,
             'operator_id': self.operator_id,
@@ -188,6 +254,8 @@ class AuditLog(db.Model):
             'reason': self.reason,
             'old_status': self.old_status,
             'new_status': self.new_status,
+            'old_quantity': self.old_quantity,
+            'new_quantity': self.new_quantity,
             'detail': self.detail,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S')
         }

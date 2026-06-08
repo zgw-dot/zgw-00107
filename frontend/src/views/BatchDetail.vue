@@ -40,6 +40,46 @@
       </el-descriptions>
     </el-card>
 
+    <el-card v-if="stockTakes.length > 0" style="margin-top: 20px;">
+      <template #header>
+        <div style="font-weight: 600;">盘点历史记录</div>
+      </template>
+      <el-table :data="stockTakes" stripe size="small">
+        <el-table-column prop="stock_take_no" label="盘点单号" width="140" />
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="getStockTakeTagType(row.status)" size="small">
+              {{ row.status_text }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="expected_quantity" label="账面数量" width="100">
+          <template #default="{ row }">{{ row.expected_quantity }}{{ row.unit }}</template>
+        </el-table-column>
+        <el-table-column prop="actual_quantity" label="实盘数量" width="100">
+          <template #default="{ row }">
+            <span v-if="row.actual_quantity !== null">{{ row.actual_quantity }}{{ row.unit }}</span>
+            <span v-else style="color: #909399;">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="difference_quantity" label="差异" width="100">
+          <template #default="{ row }">
+            <span v-if="row.actual_quantity !== null" :style="{ color: row.difference_quantity !== 0 ? '#f56c6c' : '#67c23a', fontWeight: 600 }">
+              {{ row.difference_quantity > 0 ? '+' : '' }}{{ row.difference_quantity }}{{ row.unit }}
+            </span>
+            <span v-else style="color: #909399;">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="creator_name" label="操作人" width="80" />
+        <el-table-column prop="created_at" label="创建时间" width="160" />
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="viewStockTakeDetail(row)">详情</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <el-card style="margin-top: 20px;">
       <template #header>
         <div style="font-weight: 600;">操作审计日志</div>
@@ -76,13 +116,18 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getBatchDetail } from '../api/batch'
+import { useUserStore } from '../store/user'
 
 const route = useRoute()
+const router = useRouter()
+const userStore = useUserStore()
+const isKeeper = userStore.isKeeper
 const loading = ref(false)
 const batch = ref(null)
 const auditLogs = ref([])
+const stockTakes = ref([])
 
 function getBatchTagType(row) {
   if (!row) return ''
@@ -123,9 +168,23 @@ async function loadData() {
     const res = await getBatchDetail(route.params.id)
     batch.value = res.batch
     auditLogs.value = res.audit_logs
+    stockTakes.value = res.stock_takes || []
   } finally {
     loading.value = false
   }
+}
+
+function viewStockTakeDetail(stockTake) {
+  router.push(`/stock-takes/${stockTake.id}`)
+}
+
+function getStockTakeTagType(status) {
+  const map = {
+    'pending_confirm': 'warning',
+    'confirmed': 'success',
+    'cancelled': 'info'
+  }
+  return map[status] || 'primary'
 }
 
 onMounted(loadData)
