@@ -4,6 +4,7 @@
       <div class="page-title">物资批次管理</div>
       <div class="header-actions">
         <el-upload
+          v-if="isKeeper"
           ref="uploadRef"
           :show-file-list="false"
           :before-upload="beforeImport"
@@ -11,8 +12,8 @@
         >
           <el-button type="primary" :icon="Upload">导入批次</el-button>
         </el-upload>
-        <el-button type="success" :icon="Download" @click="handleExport">导出批次</el-button>
-        <el-button type="primary" :icon="Plus" @click="openCreateDialog">新增批次</el-button>
+        <el-button v-if="isKeeper" type="success" :icon="Download" @click="handleExport">导出批次</el-button>
+        <el-button v-if="isKeeper" type="primary" :icon="Plus" @click="openCreateDialog">新增批次</el-button>
       </div>
     </div>
 
@@ -47,6 +48,7 @@
           <template #default="{ row }">
             <el-button link type="primary" @click="viewDetail(row)">详情</el-button>
             <el-button 
+              v-if="isKeeper"
               link 
               type="warning" 
               @click="openRotateDialog(row)"
@@ -153,8 +155,11 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Upload, Download } from '@element-plus/icons-vue'
 import { getBatches, createBatch, rotateBatch, exportBatches, importBatches } from '../api/batch'
+import { useUserStore } from '../store/user'
 
 const router = useRouter()
+const userStore = useUserStore()
+const isKeeper = userStore.isKeeper
 const loading = ref(false)
 const submitting = ref(false)
 const batches = ref([])

@@ -42,6 +42,14 @@ def add_audit_log(order_id=None, batch_id=None, action='', action_text='', opera
     db.session.flush()
 
 
+def require_warehouse_keeper():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user or user.role != 'warehouse_keeper':
+        return jsonify({'message': '只有仓库管理员可以执行此操作'}), 403
+    return None
+
+
 def init_db():
     with app.app_context():
         db.create_all()
@@ -117,6 +125,9 @@ def get_available_batches():
 @app.route('/api/batches', methods=['POST'])
 @jwt_required()
 def create_batch():
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
     user_id = int(get_jwt_identity())
     data = request.get_json()
 
@@ -181,6 +192,9 @@ def get_batch_detail(batch_id):
 @app.route('/api/batches/<int:batch_id>/rotate', methods=['POST'])
 @jwt_required()
 def rotate_batch(batch_id):
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
     user_id = int(get_jwt_identity())
     data = request.get_json()
     reason = data.get('reason', '').strip()
@@ -607,6 +621,9 @@ def damage_order(order_id):
 @app.route('/api/batches/export', methods=['GET'])
 @jwt_required()
 def export_batches():
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
     batches = MaterialBatch.query.order_by(MaterialBatch.created_at.desc()).all()
     data = []
     for b in batches:
@@ -643,6 +660,9 @@ def export_batches():
 @app.route('/api/batches/import', methods=['POST'])
 @jwt_required()
 def import_batches():
+    auth_err = require_warehouse_keeper()
+    if auth_err:
+        return auth_err
     user_id = int(get_jwt_identity())
     reason = request.form.get('reason', '').strip()
     if not reason:

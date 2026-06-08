@@ -252,3 +252,92 @@ A: 删除 `backend/data.db` 文件，重新启动后端会自动初始化
 
 **Q: 如何修改端口？**
 A: 后端修改 `app.py` 最后一行的 port，前端修改 `vite.config.js` 中的 server.port
+
+## 权限修复验证说明
+
+### 问题背景
+
+修复前：值班员(duty)登录后可以直接创建库存批次，绕过仓库管理员审批写入入库数据，存在越权风险。
+
+### 修复范围
+
+**后端接口权限加固（根因修复）**：
+
+| 接口 | 方法 | 修复前 | 修复后 |
+|------|------|--------|--------|
+| `/api/batches` | POST | 所有登录用户 | 仅仓库管理员 |
+| `/api/batches/:id/rotate` | POST | 所有登录用户 | 仅仓库管理员 |
+| `/api/batches/import` | POST | 所有登录用户 | 仅仓库管理员 |
+| `/api/batches/export` | GET | 所有登录用户 | 仅仓库管理员 |
+| `/api/orders/:id/approve` | POST | 已限制 | 保持仅仓库管理员 |
+
+**前端入口隐藏**：
+
+- 批次管理页面：导入、导出、新增、轮换按钮，仅管理员可见
+- 借用单据审批按钮：仅管理员可见（原有逻辑保留）
+
+### 验证方法
+
+**方式一：运行自动化测试脚本**
+
+```bash
+# 在项目根目录运行
+python test_permission_fix.py
+```
+
+**方式二：手动验证步骤**
+
+**验证1：值班员越权操作被拒绝**
+1. 用 `duty/duty123` 登录
+2. 进入「物资批次管理」页面，**看不到**导入、导出、新增按钮
+3. 直接用 API 工具调用：
+   ```bash
+   # 获取duty的token
+   curl -X POST http://localhost:5000/api/auth/login \
+     -H "Content-Type: application/json" \
+     -d '{"username":"duty","password":"duty123"}'
+   
+   # 尝试创建批次（应返回403）
+   curl -X POST http://localhost:5000/api/batches \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer <duty_token>" \
+     -d '{
+       "batch_no": "TEST-BYPASS-001",
+       "material_name": "越权测试",
+       "total_quantity": 100,
+       "unit": "个",
+       "production_date": "2024-01-01",
+       "expiry_date": "2026-12-31",
+       "warehouse_location": "A-01",
+       "reason": "越权测试"
+     }'
+   ```
+   预期返回：`{"message": "只有仓库管理员可以执行此操作"}`，HTTP 403
+
+**验证2：管理员操作正常**
+1. 用 `admin/admin123` 登录
+2. 进入「物资批次管理」页面，可以看到导入、导出、新增按钮
+3. 创建一个批次，验证成功入库
+
+**验证3：借用主流程未被破坏**
+1. admin 创建批次（库存100个）
+2. duty 发起借用申请（10个）
+3. admin 审批通过
+4. duty 领用，验证库存扣减为90
+5. duty 归还，验证库存恢复为100
+6. 查看审计日志，验证所有状态变更都有记录且备注必填
+
+**验证4：非法状态校验正常**
+- 借用数量超库存 → 拒绝，库存不变
+- 未领用就归还 → 拒绝
+- 过期批次借用 → 拒绝
+
+### 回归测试清单
+
+✅ 权限越权防护（4个接口均返回403）
+✅ 管理员正常操作不受影响
+✅ 借用主流程：申请→审批→领用→归还
+✅ 库存扣减和恢复正确
+✅ 审计日志完整记录，备注必填
+✅ 非法状态校验（超库存、未领用归还、过期借用）
+✅ 前端入口按角色正确隐藏
