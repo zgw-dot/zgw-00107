@@ -96,8 +96,8 @@ print(f'  ✅ 值班员创建盘点单被拒绝: {response.status_code}')
 response = requests.get(f'{BASE_URL}/stock-takes', headers=get_headers(duty_token))
 duty_st_list = response.json()
 for st in duty_st_list:
-    assert st['status'] == 'confirmed', '值班员只能看已确认'
-print(f'  ✅ 值班员列表只显示已确认: {len(duty_st_list)} 条')
+    assert st['status'] in ('confirmed', 'cancelled'), '值班员只能看已确认和已撤销'
+print(f'  ✅ 值班员列表只显示终态: {len(duty_st_list)} 条 (已确认+已撤销)')
 
 response = requests.get(f'{BASE_URL}/stock-takes/{st_id}', headers=get_headers(duty_token))
 assert response.status_code == 200, '值班员应能查看已确认'
@@ -212,6 +212,58 @@ response = requests.get(f'{BASE_URL}/batches/export', headers=get_headers(admin_
 assert response.status_code == 200
 assert 'vnd.openxmlformats' in response.headers['Content-Type']
 print('  ✅ 导出功能正常')
+
+# 测试6: 已撤销盘点单对值班员可见
+print('\n--- 测试6: 已撤销盘点单对值班员可见 ---')
+batch_data6 = {
+    'batch_no': f'TEST-CANCEL-{int(time.time())}',
+    'material_name': '撤销可见性测试',
+    'total_quantity': 150,
+    'unit': '个',
+    'production_date': '2024-01-01',
+    'expiry_date': '2026-12-31',
+    'warehouse_location': 'B-02-01',
+    'reason': '撤销可见性测试'
+}
+response = requests.post(f'{BASE_URL}/batches', json=batch_data6, headers=get_headers(admin_token))
+batch6 = response.json()
+
+response = requests.post(f'{BASE_URL}/stock-takes', json={'material_batch_id': batch6['id'], 'reason': '测试撤销可见性'}, headers=get_headers(admin_token))
+assert response.status_code == 200
+st_cancel = response.json()
+st_cancel_id = st_cancel['id']
+
+response = requests.post(f'{BASE_URL}/stock-takes/{st_cancel_id}/cancel', json={'reason': '信息有误重新盘点'}, headers=get_headers(admin_token))
+assert response.status_code == 200
+st_cancelled = response.json()
+assert st_cancelled['status'] == 'cancelled'
+assert st_cancelled['status_text'] == '已撤销'
+assert st_cancelled['canceller_name'] == 'admin'
+assert st_cancelled['cancelled_at'] != ''
+print(f'  ✅ 管理员撤销盘点单: {st_cancelled["stock_take_no"]}, 状态={st_cancelled["status_text"]}')
+
+response = requests.get(f'{BASE_URL}/stock-takes', headers=get_headers(duty_token))
+duty_list_after = response.json()
+cancelled_in_duty = [st for st in duty_list_after if st['id'] == st_cancel_id]
+assert len(cancelled_in_duty) == 1, '值班员列表应能看到已撤销盘点单'
+assert cancelled_in_duty[0]['status'] == 'cancelled'
+assert cancelled_in_duty[0]['status_text'] == '已撤销'
+assert cancelled_in_duty[0]['canceller_name'] == 'admin'
+print(f'  ✅ 值班员列表能查到已撤销: {cancelled_in_duty[0]["stock_take_no"]}')
+
+response = requests.get(f'{BASE_URL}/stock-takes/{st_cancel_id}', headers=get_headers(duty_token))
+assert response.status_code == 200, '值班员应能打开已撤销详情'
+detail = response.json()
+assert detail['stock_take']['status'] == 'cancelled'
+assert detail['stock_take']['canceller_name'] == 'admin'
+assert len(detail['audit_logs']) > 0
+cancel_logs = [l for l in detail['audit_logs'] if l['action'] == 'cancel_stock_take']
+assert len(cancel_logs) > 0
+print(f'  ✅ 值班员能打开已撤销详情，撤销人={detail["stock_take"]["canceller_name"]}，审计日志={len(detail["audit_logs"])}条')
+
+response = requests.post(f'{BASE_URL}/stock-takes/{st_cancel_id}/cancel', json={'reason': '越权测试'}, headers=get_headers(duty_token))
+assert response.status_code == 403, '值班员撤销操作应被拒绝'
+print('  ✅ 值班员写操作仍被拒绝: 403')
 
 print('\n' + '='*60)
 print('✅ 所有自动化测试通过！')

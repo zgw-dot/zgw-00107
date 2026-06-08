@@ -837,7 +837,7 @@ def get_stock_takes():
     stock_takes = StockTake.query.order_by(StockTake.created_at.desc()).all()
     
     if user.role == 'duty_officer':
-        stock_takes = [st for st in stock_takes if st.status == 'confirmed']
+        stock_takes = [st for st in stock_takes if st.status in ('confirmed', 'cancelled')]
     
     return jsonify([st.to_dict() for st in stock_takes])
 
@@ -852,8 +852,8 @@ def get_stock_take_detail(stock_take_id):
     if not stock_take:
         return jsonify({'message': '盘点单不存在'}), 404
     
-    if user.role == 'duty_officer' and stock_take.status != 'confirmed':
-        return jsonify({'message': '值班员只能查看已确认的盘点记录'}), 403
+    if user.role == 'duty_officer' and stock_take.status not in ('confirmed', 'cancelled'):
+        return jsonify({'message': '值班员只能查看已完成的盘点记录'}), 403
     
     logs = AuditLog.query.filter_by(stock_take_id=stock_take_id).order_by(AuditLog.created_at.desc()).all()
     
